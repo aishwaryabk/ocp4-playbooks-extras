@@ -104,3 +104,5 @@
 - import_playbook: ocp-scheduler.yml
   when: scheduler_role_enable is defined and scheduler_role_enable
 
+- import_playbook: hypershift-agent.yml
+  when: hypershift_agent_install is defined and hypershift_agent_install 

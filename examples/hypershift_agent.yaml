@@ -1,0 +1,30 @@
+---
+# hypershift agent based installation
+
+hypershift_agent_install: false
+mce_install: false
+static_ip_enabled: false
+hosted_cluster_name: "rdr-hypershift-001"
+mce_catalogsource_name: "redhat-operators"
+mce_catalogsource_image: ""
+mce_upgrade_channel: "stable-2.3"
+hypershift_git_repo: "https://github.com/openshift/hypershift"
+hypershift_git_branch: "main"
+base_domain: "ocp-powervs-ppc64le.com"
+ocp_pull_secret_path: "~/.pullSecret"
+ocp_release: ""
+hypershift_dir: "/root/hypershift"
+hypershift_git_repo: "https://github.com/openshift/hypershift"
+hypershift_git_branch: "main"
+cluster_namespace: "clusters"
+ssh_pub_key: ""
+db_volume_size: "10Gi"
+fs_volume_size: "100Gi"
+iso_url: ""
+root_fs_url: ""
+mac_address_0: ""
+mac_address_1: ""
+ip_address_0: ""
+ip_address_1: ""
+dns_resolver_ip: ""
+network_gateway: ""

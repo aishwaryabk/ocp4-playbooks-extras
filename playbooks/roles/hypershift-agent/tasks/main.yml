@@ -1,0 +1,416 @@
+---
+# This file executes from management cluster
+
+- name: Check if cluster operators and nodes are healthy on management cluster
+  include_role:
+    name: check-cluster-health
+
+- name: Install MCE operator
+  block:
+    - name: Deploy MCE Operator
+      block:
+        - name: Setup custom catalog source
+          block:
+            - name: Include role to create image content source policy and catalog source
+              include_role:
+                name: set-custom-catalogsource
+              vars:
+                custom_catalogsource_name: "{{ mce_catalogsource_name }}"
+                custom_catalogsource_display_name: "Red Hat Operators MCE"
+                custom_catalogsource_image: "{{ mce_catalogsource_image }}"
+              when: mce_catalogsource_image != '' and mce_catalogsource_image != None
+
+        - name: Check if desired catalogsource is ready
+          shell: "oc get catalogsource {{ mce_catalogsource_name }} -n openshift-marketplace -ojsonpath='{.status.connectionState.lastObservedState}'"
+          register: catsrc_status
+          until: catsrc_status.stdout == "READY"
+          retries: 15
+          delay: 60
+
+        - name: Create namespace for mce operator
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                labels:
+                  pod-security.kubernetes.io/audit: privileged
+                  pod-security.kubernetes.io/enforce: privileged
+                  pod-security.kubernetes.io/warn: privileged
+                  security.openshift.io/scc.podSecurityLabelSync: "false"
+                  kubernetes.io/metadata.name: multicluster-engine
+                  name: multicluster-engine
+                name: multicluster-engine
+              spec:
+                finalizers:
+                - kubernetes
+
+        - name: Create operator group for mce operator
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: operators.coreos.com/v1
+              kind: OperatorGroup
+              metadata:
+                generateName: multicluster-engine-
+                name: multicluster-engine
+                namespace: multicluster-engine
+              spec:
+                targetNamespaces:
+                - multicluster-engine
+
+        - name: Create subscription for mce operator
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: operators.coreos.com/v1alpha1
+              kind: Subscription
+              metadata:
+                labels:
+                  operators.coreos.com/multicluster-engine.multicluster-engine: ""
+                name: multicluster-engine
+                namespace: multicluster-engine
+              spec:
+                channel: "{{ mce_upgrade_channel }}"
+                installPlanApproval: Automatic
+                name: multicluster-engine
+                source: "{{ mce_catalogsource_name }}"
+                sourceNamespace: openshift-marketplace
+      when: mce_install
+
+    - name: Validate MCE Operator Deployment
+      block:
+        - name: Check if the subscription is created
+          shell: oc get subscription multicluster-engine -n multicluster-engine --no-headers | wc -l
+          register: mce_operators_subscription
+          until: mce_operators_subscription.stdout|int == 1
+
+        - name: Check if the cluster service version has succeeded
+          shell: oc get clusterserviceversion -n multicluster-engine | awk '{ if (($1 ~ /multicluster-engine/) && $NF=="Succeeded") print $1 }' | wc -l
+          register: mce_operators_csv
+          until: mce_operators_csv.stdout|int == 1
+          retries: 15
+          delay: 120
+
+        - name: Check if operator pods are running
+          shell: oc get pod -n  multicluster-engine| grep "Running" | grep "multicluster-engine-operator" | wc -l
+          register: mce_operator_pods
+          until: mce_operator_pods.stdout|int == 2
+          retries: 10
+          delay: 60
+  
+        - name: Create instance of the mce operator
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: multicluster.openshift.io/v1
+              kind: MultiClusterEngine
+              metadata:
+                name: engine
+
+        - name: Check if mce instance is in available phase
+          shell: "oc get MultiClusterEngine engine -n multicluster-engine -ojsonpath='{.status.phase}'"
+          register: mce_status_phase
+          until: mce_status_phase.stdout == "Available"
+          retries: 15
+          delay: 120
+
+        - name: Enable hypershift-preview component
+          shell:
+            cmd: |
+                oc patch mce engine --type=merge -p '{"spec":{"overrides":{"components":[{"name":"hypershift-preview","enabled": true}]}}}'
+
+- name: Verify ClusterImageSet availaibility
+  block:
+    - name: Check if ClusterImageSet list contains the expected release
+      shell: oc get ClusterImageSet | grep "{{ ocp_release }}" | wc -l
+      register: cluster_image_set
+      ignore_errors: true
+
+    - name: Create ClusterImageSet for expected version
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: hive.openshift.io/v1
+          kind: ClusterImageSet
+          metadata:
+            name: "img{{ ocp_release }}-multi-appsub"
+        spec:
+          releaseImage: "quay.io/openshift-release-dev/ocp-release:{{ ocp_release }}-multi"
+      when: cluster_image_set.stdout|int == 0
+
+- name: Create ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: mirror-config
+        namespace: multicluster-engine
+        labels:
+          app: assisted-service
+      data:
+        registries.conf: |
+          unqualified-search-registries = ["registry.access.redhat.com", "docker.io"]
+          [[registry]]
+            location = "registry.stage.redhat.io"
+            insecure = false
+            blocked = false
+            mirror-by-digest-only = true
+            prefix = ""
+            [[registry.mirror]]
+              location = "brew.registry.redhat.io"
+              insecure = false
+          [[registry]]
+            location = "registry.redhat.io/multicluster-engine"
+            insecure = false
+            blocked = false
+            mirror-by-digest-only = true
+            prefix = ""
+            [[registry.mirror]]
+              location = "brew.registry.redhat.io/multicluster-engine"
+              insecure = false
+
+- name: Create RoleBinding
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: authentication-reader-for-authenticated-users
+        namespace: kube-system
+        labels:
+          hypershift.openshift.io/managed: "true"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: extension-apiserver-authentication-reader
+      subjects:
+      - apiGroup: rbac.authorization.k8s.io
+        kind: Group
+        name: system:authenticated
+
+- name: Set value of ocp_release_min
+  shell: "echo {{ ocp_release }} | awk -F'-' '{print $1}'"
+  register: ocp_release_min
+
+- name: Set value of ocp_release_version
+  shell: "curl -s https://mirror.openshift.com/pub/openshift-v4/ppc64le/clients/ocp/{{ ocp_release }}/release.txt | awk '/machine-os / { print $2 }'"
+  register: ocp_release_version
+
+- name: Create AgentServiceConfig
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: AgentServiceConfig
+      metadata:
+        name: agent
+      spec:
+        databaseStorage:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: "{{ db_volume_size }}"
+        filesystemStorage:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: "{{ fs_volume_size }}"
+        mirrorRegistryRef:
+          name: mirror-config
+        osImages:
+          - openshiftVersion: "{{ ocp_release_min.stdout }}"
+            version: "{{ ocp_release_version.stdout }}"
+            url: "{{ iso_url }}"
+            rootFSUrl: "{{ root_fs_url }}"
+            cpuArchitecture: "ppc64le"
+
+- name: Hypershift deployment
+  block:
+    - name: Clone hypershift github repo
+      git:
+        repo: "{{ hypershift_git_repo }}"
+        dest: "{{ hypershift_dir }}"
+        version: "{{ hypershift_git_branch }}"
+
+    - name: Build the hypershift binary
+      make:
+        target: build
+        chdir: "{{ hypershift_dir }}"
+
+    - name: Setting the hosted control plane namespace
+      set_fact:
+        hosted_control_plane_namespace: "{{ cluster_namespace }}-{{ hosted_cluster_name }}"
+
+    - name: Create namespace for hosted control plane namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            labels:
+              pod-security.kubernetes.io/audit: privileged
+              pod-security.kubernetes.io/warn: privileged
+            name: "{{ hosted_control_plane_namespace }}"
+          spec:
+            finalizers:
+            - kubernetes
+
+    - name: Create Hypershift Cluster Agent
+      shell: |
+        hypershift create cluster agent --name={{ hosted_cluster_name }} --pull-secret={{ pull_secret_file }} --agent-namespace={{ hosted_control_plane_namespace }} --base-domain={{ base_domain }} --api-server-address=api.{{ hosted_cluster_name }}.{{ base_domain }} --release-image=quay.io/openshift-release-dev/ocp-release:{{ ocp_release }}-multi  --render > {{ hypershift_dir }}/render.yaml
+      ignore_errors: true
+      args:
+        chdir: "{{ hypershift_dir }}"
+        executable: /bin/bash
+
+    - name: Modify the rendered file
+      shell:
+        cmd: |
+            sed -i.bak '/nodePort:/d' {{ hypershift_dir }}/render.yaml
+            sed -i.bak '/address:/d' {{ hypershift_dir }}/render.yaml
+            sed -E -i '
+            /^\s*-\s*service:\s*APIServer/{
+             :top
+             N
+             /type/!btop
+             s/(type:).*/\1\ LoadBalancer/
+            }' {{ hypershift_dir }}/render.yaml
+            sed -i.bak 's/NodePort/Route/g' {{ hypershift_dir }}/render.yaml
+
+    - name: Create the hosted cluster
+      shell: oc create -f {{ hypershift_dir }}/render.yaml
+      ignore_errors: true
+
+    - name: Check pods
+      shell: 'oc get pods -n {{ hosted_control_plane_namespace }} | grep "Running" | wc -l'
+      register: hc_pods
+      until: hc_pods.stdout|int > 0
+      retries: 15
+      delay: 60
+
+    - name: Check if all the pods are created
+      shell: "oc wait -n {{ hosted_control_plane_namespace }} --for=condition=Ready pods --all --timeout=600s"
+
+    - name: Generate the kubeconfig of hosted cluster
+      shell: "hypershift create kubeconfig --namespace clusters --name {{ hosted_cluster_name }} > {{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig"
+      ignore_errors: true
+      args:
+        chdir: "{{ hypershift_dir }}"
+        executable: /bin/bash
+
+  environment: "{{ hypershift_env_vars }}"
+      
+- name: List the Kubernetes api service to create DNS entries
+  shell: "oc get svc kube-apiserver -n {{ hosted_control_plane_namespace }} --no-headers | awk '{ print $4 }'"
+  register: dns_entry
+
+- name: Set the value of ssh_pub_key
+  shell: "cat {{ ssh_pub_key }}"
+  register: ssh_pub_key_value
+
+- name: Create NMStateConfig for static IP configuration
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: NMStateConfig
+      metadata:
+        name: static-ip-test-nmstate-config
+        namespace: "{{ hosted_control_plane_namespace }}"
+        labels:
+          infraenv: static-ip-test-ppc64le
+      spec:
+        config:
+          interfaces:
+            - name: eth0
+              type: ethernet
+              state: up
+              mac-address: "{{ mac_address_0 }}"
+              ipv4:
+                enabled: true
+                address:
+                  - ip: "{{ ip_address_0 }}"
+                    prefix-length: 22
+                dhcp: false
+          dns-resolver:
+            config:
+              server:
+                - "{{ dns_resolver_ip }}"
+                - 9.9.9.9
+          routes:
+            config:
+              - destination: 0.0.0.0/0
+                next-hop-address: "{{ network_gateway }}"
+                next-hop-interface: eth0
+                table-id: 254
+        interfaces:
+          - name: "eth0"
+            macAddress: "{{ mac_address_0 }}"
+  when: static_ip_enabled
+
+- name: Create InfraEnv
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: InfraEnv
+      metadata:
+        name: "{{ hosted_cluster_name }}"
+        namespace: "{{ hosted_control_plane_namespace }}"
+      spec:
+        cpuArchitecture: ppc64le
+        pullSecretRef:
+          name: pull-secret
+        sshAuthorizedKey: "{{ ssh_pub_key_value.stdout }}"
+        ignitionConfigOverride: '{"ignition": {"version": "3.1.0"}, "storage": {"files": [{"overwrite": true, "path": "/etc/containers/policy.json", "contents": {"source":"data:text/plain;base64,ewogICAgImRlZmF1bHQiOiBbCiAgICAgICAgewogICAgICAgICAgICAidHlwZSI6ICJpbnNlY3VyZUFjY2VwdEFueXRoaW5nIgogICAgICAgIH0KICAgIF0sCiAgICAidHJhbnNwb3J0cyI6CiAgICAgICAgewogICAgICAgICAgICAiZG9ja2VyLWRhZW1vbiI6CiAgICAgICAgICAgICAgICB7CiAgICAgICAgICAgICAgICAgICAgIiI6IFt7InR5cGUiOiJpbnNlY3VyZUFjY2VwdEFueXRoaW5nIn1dCiAgICAgICAgICAgICAgICB9CiAgICAgICAgfQp9Cgo="}}]}}'
+
+- name: Change a field in InfraEnv
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: InfraEnv
+      metadata:
+        name: "{{ hosted_cluster_name }}"
+        namespace: "{{ hosted_control_plane_namespace }}"
+      spec:
+        cpuArchitecture: ppc64le
+        pullSecretRef:
+          name: pull-secret
+        sshAuthorizedKey: "{{ ssh_pub_key_value.stdout }}"
+        ignitionConfigOverride: '{"ignition": {"version": "3.1.0"}, "storage": {"files": [{"overwrite": true, "path": "/etc/containers/policy.json", "contents": {"source":"data:text/plain;base64,ewogICAgImRlZmF1bHQiOiBbCiAgICAgICAgewogICAgICAgICAgICAidHlwZSI6ICJpbnNlY3VyZUFjY2VwdEFueXRoaW5nIgogICAgICAgIH0KICAgIF0sCiAgICAidHJhbnNwb3J0cyI6CiAgICAgICAgewogICAgICAgICAgICAiZG9ja2VyLWRhZW1vbiI6CiAgICAgICAgICAgICAgICB7CiAgICAgICAgICAgICAgICAgICAgIiI6IFt7InR5cGUiOiJpbnNlY3VyZUFjY2VwdEFueXRoaW5nIn1dCiAgICAgICAgICAgICAgICB9CiAgICAgICAgfQp9Cgo="}}]}}'
+        nmStateConfigLabelSelector:
+          matchLabels:
+            infraenv: static-ip-test-ppc64le
+  when: static_ip_enabled
+
+- name: Check if the ISO is generated
+  shell: "oc get infraenv -n {{ hosted_control_plane_namespace }} --no-headers | awk '{ print $2 }'"
+  register: infraenv_iso
+  until: infraenv_iso.stdout|length > 0
+  retries: 15
+  delay: 60
+
+- name: Get the url of the generated ISO
+  shell: "oc get -n {{ hosted_control_plane_namespace }} InfraEnv {{ hosted_cluster_name }} -ojsonpath='{.status.isoDownloadURL}'"
+  register: infraenv_iso
+
+- name: Output the ISO URL link for download
+  debug:
+    msg: "{{ infraenv_iso.stdout }}"
+
+- name: Output the Kubernetes api service to create DNS entries
+  debug:
+   msg: "{{ dns_entry.stdout }}"
+
+- name: Output the location of Kubeconfig of the hosted cluster
+  debug:
+    msg: "{{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig"
