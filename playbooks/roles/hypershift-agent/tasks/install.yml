@@ -285,6 +285,7 @@
 
     - name: Check if all the pods are created
       shell: "oc wait -n {{ hosted_control_plane_namespace }} --for=condition=Ready pods --all --timeout=600s"
+      ignore_errors: true
 
     - name: Sleep for 400 seconds
       wait_for:
@@ -402,3 +403,9 @@
 - name: Output the location of Kubeconfig of the hosted cluster
   debug:
     msg: "{{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig"
+
+- name: Create Power worker nodes
+  script: "{{ role_path }}/files/create-worker-power.sh '{{ API_KEY }}' '{{ hosted_cluster_name }}' '{{ hyp_worker_count }}' '{{ bastion_ip }}'"
+#  async: 300
+#  poll: 5
+
