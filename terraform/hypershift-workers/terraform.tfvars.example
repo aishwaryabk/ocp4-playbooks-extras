@@ -1,0 +1,34 @@
+# IBM Cloud Authentication
+ibmcloud_api_key = "your-ibm-cloud-api-key-here"
+
+# IBM Cloud Configuration
+region         = "jp-tok"
+zone           = "tok04"
+resource_group = "ipi-resource-group"
+
+# Power VS Workspace
+power_instance_id = "crn:v1:bluemix:public:power-iaas:tok04:a/bf9f1f230466481b95a99f18739fede9:d3814f7d-bbf0-4c56-aaa2-e0d2ddec6e38::"
+
+# Network Configuration
+network_name = "ocp-private-net"
+
+# RHCOS Image
+rhcos_image_name = "rhcos-417--tier1"
+
+# Hypershift Cluster Configuration
+hypershift_cluster_name = "your-hypershift-cluster-name"
+
+# Worker Node Configuration
+worker_count    = 1
+memory          = 16
+processors      = 0.5
+processor_type  = "shared"
+system_type     = "e980"
+storage_tier    = "tier1"
+
+# Bastion Host Configuration
+bastion_ip            = "your-bastion-ip-address"
+ssh_private_key_path  = "/root/id_rsa"
+
+# DNS Configuration
+dns_instance_name = "rdr-ipi-validation-dns"
