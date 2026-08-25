@@ -13,10 +13,10 @@
         dest: "{{ hypershift_dir }}"
         version: "{{ hypershift_git_branch }}"
 
-    - name: Build the hcp binary
-      make:
-        target: build
-        chdir: "{{ hypershift_dir }}"
+#    - name: Build the hcp binary
+#      make:
+#        target: build
+#        chdir: "{{ hypershift_dir }}"
 
     - name: HCP version
       environment:
@@ -34,3 +34,6 @@
 
 - include_tasks: destroy.yml
   when: hypershift_agent_destroy is defined and hypershift_agent_destroy
+
+- include_tasks: tests.yml
+  when: hypershift_agent_test is defined and hypershift_agent_test

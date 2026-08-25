@@ -438,6 +438,7 @@ hypershift_agent_install: false
 hypershift_agent_destroy: false #Enable only to destroy the hosted cluster
 acm_mce_install: false
 heterogeneous_install: false
+hypershift_agent_test: false
 hosted_cluster_name: "hypershift-hosted"
 acm_catalogsource_name: "redhat-operators-acm"
 acm_catalogsource_image: ""
@@ -462,6 +463,14 @@ iso_url_ppc: ""
 root_fs_url_ppc: ""
 iso_url_x86: ""
 root_fs_url_x86: ""
+openshift_tests_private_run: false
+cucushift_run: false
+opm_tarball: ""
+operator_sdk_repo: "https://github.com/openshift/ocp-release-operator-sdk.git"
+git_branch: ""
+hyp_go_tarball: ""
+hypershift_testcase_filters: ""
+qe_app_registry_version: ""
 
 # ocp-lso vars
 lso_enabled: false            #set to true for lso operator installation

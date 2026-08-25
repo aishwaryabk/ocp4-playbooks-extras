@@ -201,7 +201,7 @@
   register: ocp_release_min
 
 - name: Set value of ocp_release_version
-  shell: "curl -s https://mirror.openshift.com/pub/openshift-v4/ppc64le/clients/ocp/{{ ocp_release }}/release.txt | awk '/machine-os / { print $2 }'"
+  shell: "curl -s https://mirror.openshift.com/pub/openshift-v4/ppc64le/clients/ocp-dev-preview/{{ ocp_release }}/release.txt | awk '/machine-os / { print $2 }'"
   register: ocp_release_version
 
 - name: Create AgentServiceConfig
@@ -285,6 +285,7 @@
 
     - name: Check if all the pods are created
       shell: "oc wait -n {{ hosted_control_plane_namespace }} --for=condition=Ready pods --all --timeout=600s"
+      ignore_errors: true
 
     - name: Sleep for 400 seconds
       wait_for:

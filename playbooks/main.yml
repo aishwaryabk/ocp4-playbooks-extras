@@ -137,7 +137,8 @@
 - import_playbook: hypershift-agent.yml
   when: >
         (hypershift_agent_install is defined and hypershift_agent_install) or
-        (hypershift_agent_destroy is defined and hypershift_agent_destroy)
+        (hypershift_agent_destroy is defined and hypershift_agent_destroy) or
+        (hypershift_agent_test is defined and hypershift_agent_test)
   
 - import_playbook: ocp-lso.yml
   when: lso_enabled is defined and lso_enabled

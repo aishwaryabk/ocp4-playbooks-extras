@@ -1,0 +1,216 @@
+---
+- name: Run openshift-tests-private tests
+  block:
+  - name: Download OPM tarball
+    get_url:
+      url: "{{ opm_tarball }}"
+      dest: "/tmp/opm-src.tar.gz"
+      mode: '0644'
+
+  - name: Extract OPM
+    unarchive:
+      src: "/tmp/opm-src.tar.gz"
+      dest: "/tmp/"
+      remote_src: yes
+
+  - name: Find extracted OPM directory
+    find:
+      paths: "/tmp/"
+      file_type: directory
+      patterns: "operator-framework-olm*"
+    register: opm_dir
+
+  - name: Run make build command
+    make:
+      chdir: "{{ opm_dir.files[0].path }}"
+      target: build
+
+  - name: Clone operator SDK
+    ansible.builtin.git:
+      repo: "{{ operator_sdk_repo }}"
+      dest: "/tmp/operator_sdk"
+      version: "{{ git_branch }}"
+
+  - name: Run make build command
+    make:
+      chdir: "/tmp/operator_sdk"
+      target: build
+
+  - name: Run script for updating pull secret on hosted cluster
+    script: "{{ role_path }}/files/update_pull_secret.sh '{{ hosted_cluster_name }}'"
+
+  - name: Create qe-app-registry
+    template:
+      src: "{{ role_path }}/templates/qe-app-registry.yaml.j2"
+      dest: "{{ role_path }}/templates/qe-app-registry.yml"
+    delegate_to: localhost
+
+# To be run on hosted cluster
+  - name: Run qe-app-registry file
+    k8s:
+      kubeconfig: "{{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig"
+      state: present
+      src: "{{ role_path }}/templates/qe-app-registry.yml"
+
+  - name: Run E2E tests from openshift-tests-private repo
+    block:
+      - name: Openshift-tests-private e2e
+        include_role:
+          name: openshift-test-private-e2e
+        vars:
+          openshift_test_private_validation: true
+          openshift_test_private_directory: "{{ role_path }}/openshift_test_private_e2e"
+          openshift_test_private_golang_tarball: "{{ hyp_go_tarball }}"
+          openshift_test_private_e2e_repo: "https://github.com/openshift/openshift-tests-private.git"
+          openshift_test_private_git_branch: "{{ git_branch }}"
+          testcase_filters: "{{ hypershift_testcase_filters }}"
+    environment:
+      PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}:/tmp/opm/bin:/tmp/operator_sdk/build"
+      KUBECONFIG: "{{ hypershift_dir }}/bin/{{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig"
+  when: openshift_tests_private_run
+
+- name: Verification-tests/Cucushift tests run
+  block:
+  - name: To create htpasswd
+    shell: "htpasswd -c -B -b users.htpasswd testuser1 testuser1"
+
+  - name: Create htpass-secret
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: htpass-secret-test-{{ hosted_cluster_name }}-new
+          namespace: clusters
+        type: Opaque
+        data:
+          htpasswd: "{{ lookup('file', 'users.htpasswd') | b64encode }}"
+
+  - name: Create patch.yaml
+    template:
+      src: "{{ role_path }}/templates/patch.yaml.j2"
+      dest: "{{ role_path }}/templates/patch.yml"
+    delegate_to: localhost
+
+  - name: Apply patch to hosted cluster
+    kubernetes.core.k8s:
+      state: present
+      kind: HostedCluster
+      api_version: hypershift.openshift.io/v1beta1
+      name: "{{ hosted_cluster_name }}"
+      namespace: clusters
+      merge_type: merge
+      definition: "{{ lookup('file', role_path ~ '/templates/patch.yml') | from_yaml }}"
+
+  - name: Add other testusers to the users file
+    shell: |
+      htpasswd -bB users.htpasswd testuser2 testuser2
+      htpasswd -bB users.htpasswd testuser3 testuser3
+      htpasswd -bB users.htpasswd testuser4 testuser4
+      htpasswd -bB users.htpasswd testuser testuser
+
+  - name: Create or replace htpass-secret
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: htpass-secret-test-{{ hosted_cluster_name }}-new
+          namespace: clusters
+        type: Opaque
+        data:
+          htpasswd: "{{ lookup('file', 'users.htpasswd') | b64encode }}"
+
+  - name: Sleep for 400 seconds
+    wait_for:
+      timeout: 20
+
+  - name: Login multiple users
+    shell: |
+      oc login -u testuser1 -p testuser1 --kubeconfig={{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig
+      oc login -u testuser2 -p testuser2 --kubeconfig={{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig
+      oc login -u testuser3 -p testuser3 --kubeconfig={{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig
+      oc login -u testuser4 -p testuser4 --kubeconfig={{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig
+
+  - name: Grant admin rights to tesuser to carry out tests
+    shell: |
+      oc login -u system:admin --kubeconfig={{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig
+      oc adm policy add-cluster-role-to-user cluster-admin testuser --kubeconfig={{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig
+
+#  - name: Create a docker container to run cucushift tests
+# needs to use sleep without that container will keep running unless terminated
+
+  when: cucushift_run
+
+#RSCT and Acme air
+- name: Setup AcmeAir Multi-architecture Compute
+  block:
+  - name: Clone acme air repository
+    git:
+      repo: "{{ acme-air-repo }}"
+      dest: "/tmp/acmeair-multiarchitecture-compute"
+      version: "main"
+
+  - name: Create env.secret file with MongoDB credentials
+    ansible.builtin.copy:
+      content: |
+        username={{ mongo_username }}
+        password={{ mongo_password }}
+      dest: "/tmp/acmeair-multiarchitecture-compute/manifests/base/env.secret"
+      mode: '0644'
+
+  - name: Download kustomize binary
+    ansible.builtin.get_url:
+      url: "{{ kustomize_url }}"
+      dest: "/tmp/kustomize.tar.gz"
+      mode: '0644'
+    register: download_result
+    
+  - name: Extract kustomize binary
+    ansible.builtin.unarchive:
+      src: "/tmp/kustomize.tar.gz"
+      dest: "/tmp/acmeair-multiarchitecture-compute"
+      remote_src: yes
+    when: download_result.changed
+    
+  - name: Make kustomize executable
+    ansible.builtin.file:
+      path: "/tmp/acmeair-multiarchitecture-compute/kustomize"
+      mode: '0755'
+
+  - name: Replace amd64 with ppc64le
+    ansible.builtin.replace:
+    path: /tmp/acmeair-multiarchitecture-compute/manifests/overlays/multi-arch-powervs-empty/app.yaml
+      regexp: 'amd64'
+      replace: 'ppc64le'
+
+  - name: Replace rhcos ro rhel
+    ansible.builtin.replace:
+    path: /tmp/acmeair-multiarchitecture-compute/manifests/overlays/multi-arch-powervs-empty/app.yaml
+      regexp: 'rhcos'
+      replace: 'rhel'
+
+  - name: Replace rhcos ro rhel
+    ansible.builtin.replace:
+    path: /tmp/acmeair-multiarchitecture-compute/manifests/overlays/multi-arch-powervs-empty/db.yaml
+      regexp: 'rhcos'
+      replace: 'rhel'
+
+  - name: Run the kustomize command
+    shell: oc kustomize manifests/overlays/multi-arch-powervs-empty | oc apply -f -
+
+  - name: Check pods
+    shell: 'oc get pods -n acmeair | grep "Running" | wc -l'
+    register: acme_pods
+    until: acme_pods.stdout|int > 0
+    retries: 5
+    delay: 60
+
+  - name: Display the acme air route
+    shell: echo "https://$(oc get route acmeair -ojsonpath='{.status.ingress[0].host}' -n acmeair)/loader.html"
+
+  environment:
+    KUBECONFIG: "/bin/{{ hypershift_dir }}/{{ hosted_cluster_name }}.kubeconfig"
+  when: acme_air_run

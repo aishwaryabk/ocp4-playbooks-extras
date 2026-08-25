@@ -5,6 +5,7 @@ hypershift_agent_install: false
 hypershift_agent_destroy: false #Enable only to destroy the hosted cluster
 acm_mce_install: false
 heterogeneous_install: false
+hypershift_agent_test: false
 hosted_cluster_name: "hypershift-hosted"
 acm_catalogsource_name: "redhat-operators-acm"
 acm_catalogsource_image: ""
@@ -29,3 +30,11 @@ iso_url_ppc: ""
 root_fs_url_ppc: ""
 iso_url_x86: ""
 root_fs_url_x86: ""
+openshift_tests_private_run: true
+cucushift_run: true
+opm_tarball: "https://mirror2.openshift.com/pub/openshift-v4/x86_64/clients/ocp/4.22.0-ec.3/opm-src.tar.gz"
+operator_sdk_repo: "https://github.com/openshift/ocp-release-operator-sdk.git"
+git_branch: "release-4.22"
+hyp_go_tarball: "https://go.dev/dl/go1.24.0.linux-amd64.tar.gz"
+hypershift_testcase_filters: ""
+qe_app_registry_version: ""
